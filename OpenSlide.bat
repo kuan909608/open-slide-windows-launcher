@@ -1,428 +1,222 @@
 @echo off
-setlocal EnableExtensions EnableDelayedExpansion
-title Open Slide + Codex Launcher
-
-rem ==========================================
-rem Open Slide + Codex Windows Launcher
-rem First run: Install
-rem Next runs: Start
-rem No administrator / No auto startup
-rem ==========================================
-
-rem ===== Configuration =====
-
-set "BASE=%LOCALAPPDATA%\OpenSlide"
-set "NODEDIR=%BASE%\nodejs"
-set "NPMGLOBAL=%BASE%\npm-global"
-set "NPMCACHE=%BASE%\npm-cache"
-
-set "PROJECT_PARENT=%USERPROFILE%\Documents"
-set "PROJECT_NAME=OpenSlideProjects"
-set "PROJECT=%PROJECT_PARENT%\%PROJECT_NAME%"
-
-set "TEMPDIR=%TEMP%\OpenSlideInstall"
-
-set "NODE_VERSION=v24.22.2"
-set "NODEZIP=node-%NODE_VERSION%-win-x64.zip"
-set "NODEURL=https://nodejs.org/dist/%NODE_VERSION%"
-
-set "NODE=%NODEDIR%\node.exe"
-set "NPM=%NODEDIR%\npm.cmd"
-set "NPX=%NODEDIR%\npx.cmd"
-set "CODEX=%NPMGLOBAL%\codex.cmd"
-
-set "PORT=5173"
-
-echo.
-echo ==============================================
-echo          Open Slide + Codex Launcher
-echo ==============================================
-echo.
-
-rem ==========================================
-rem STEP 0 - Check requirements
-rem ==========================================
-
-for %%T in (curl.exe tar.exe certutil.exe robocopy.exe) do (
-    where %%T >nul 2>&1
-    if errorlevel 1 (
-        echo [ERROR] Missing Windows tool: %%T
-        goto :fail
-    )
-)
-
-for %%D in (
-    "%BASE%"
-    "%NODEDIR%"
-    "%NPMGLOBAL%"
-    "%NPMCACHE%"
-    "%TEMPDIR%"
-) do (
-    if not exist "%%~D" mkdir "%%~D"
-)
-
-rem ==========================================
-rem STEP 1 - Node.js
-rem ==========================================
-
-echo [1/4] Checking Node.js...
-
-if exist "%NODE%" if exist "%NPM%" (
-    "%NODE%" --version >nul 2>&1
-    if not errorlevel 1 goto :node_ready
-)
-
-echo Installing Node.js %NODE_VERSION%...
-
-set "ZIPFILE=%TEMPDIR%\%NODEZIP%"
-set "SHAFILE=%TEMPDIR%\SHASUMS256.txt"
-set "HASHOUT=%TEMPDIR%\hash.txt"
-set "STAGE=%TEMPDIR%\node-stage"
-
-rem Download official SHA256
-echo Downloading official checksums...
-
-curl.exe -fLsS --retry 2 ^
- "%NODEURL%/SHASUMS256.txt" ^
- -o "!SHAFILE!"
-
-if errorlevel 1 (
-    echo [ERROR] Cannot download SHA256 file.
-    goto :fail
-)
-
-rem Get expected hash
-set "EXPECTED="
-
-for /f "usebackq tokens=1,2" %%A in ("!SHAFILE!") do (
-    if /I "%%B"=="%NODEZIP%" (
-        set "EXPECTED=%%A"
-    )
-)
-
-if not defined EXPECTED (
-    echo [ERROR] SHA256 entry not found.
-    goto :fail
-)
-
-rem Download Node.js ZIP
-echo Downloading %NODEZIP%...
-
-curl.exe -fLsS --retry 2 ^
- "%NODEURL%/%NODEZIP%" ^
- -o "!ZIPFILE!"
-
-if errorlevel 1 (
-    echo [ERROR] Node.js download failed.
-    goto :fail
-)
-
-rem Verify checksum
-echo Verifying SHA256...
-
-certutil.exe -hashfile "!ZIPFILE!" SHA256 > "!HASHOUT!"
-
-if errorlevel 1 (
-    echo [ERROR] SHA256 calculation failed.
-    goto :fail
-)
-
-set "ACTUAL="
-
-for /f "usebackq skip=1 delims=" %%H in ("!HASHOUT!") do (
-    if not defined ACTUAL set "ACTUAL=%%H"
-)
-
-set "ACTUAL=!ACTUAL: =!"
-
-if /I not "!ACTUAL!"=="!EXPECTED!" (
-    echo.
-    echo Expected: !EXPECTED!
-    echo Actual:   !ACTUAL!
-    echo.
-    echo [ERROR] SHA256 verification failed.
-    goto :fail
-)
-
-echo [OK] SHA256 verified.
-
-rem Extract to staging directory
-if exist "!STAGE!" rmdir /s /q "!STAGE!"
-mkdir "!STAGE!"
-
-echo Extracting Node.js...
-
-tar.exe -xf "!ZIPFILE!" -C "!STAGE!"
-
-if errorlevel 1 (
-    echo [ERROR] Extraction failed.
-    goto :fail
-)
-
-set "SOURCE=!STAGE!\node-%NODE_VERSION%-win-x64"
-
-if not exist "!SOURCE!\node.exe" (
-    echo [ERROR] node.exe missing from ZIP.
-    goto :fail
-)
-
-if not exist "!SOURCE!\npm.cmd" (
-    echo [ERROR] npm.cmd missing from ZIP.
-    goto :fail
-)
-
-rem Copy files
-robocopy "!SOURCE!" "%NODEDIR%" /E /NFL /NDL /NJH /NJS >nul
-
-if !ERRORLEVEL! GEQ 8 (
-    echo [ERROR] Node.js copy failed.
-    goto :fail
-)
-
-if not exist "%NODE%" goto :fail
-if not exist "%NPM%" goto :fail
-
-rmdir /s /q "!STAGE!"
-
-echo [OK] Node.js installed.
-
-:node_ready
-
-rem ==========================================
-rem Configure current process environment
-rem ==========================================
-
-set "PATH=%NODEDIR%;%NPMGLOBAL%;%PATH%"
-set "npm_config_prefix=%NPMGLOBAL%"
-set "npm_config_cache=%NPMCACHE%"
-
-echo.
-echo Node.js version:
-"%NODE%" --version
-if errorlevel 1 goto :fail
-
-echo npm version:
-call "%NPM%" --version
-if errorlevel 1 goto :fail
-
-rem ==========================================
-rem STEP 2 - Open Slide
-rem ==========================================
-
-echo.
-echo [2/4] Checking Open Slide...
-
-if exist "%PROJECT%\package.json" (
-    echo [OK] Existing project detected.
-    goto :project_ready
-)
-
-echo Installing Open Slide...
-
-rem Ensure Documents directory exists
-if not exist "%PROJECT_PARENT%" (
-    mkdir "%PROJECT_PARENT%"
-)
-
-rem Do not overwrite non-empty folders
-if exist "%PROJECT%" (
-    dir /b /a "%PROJECT%" 2>nul | findstr . >nul
-    if not errorlevel 1 (
-        echo [ERROR] Project directory is not empty.
-        echo %PROJECT%
-        echo Inspect the directory before retrying.
-        goto :fail
-    )
-)
-
-rem Enter parent directory before init
-pushd "%PROJECT_PARENT%"
-if errorlevel 1 (
-    echo [ERROR] Cannot access Documents folder.
-    goto :fail
-)
-
-echo Initializing %PROJECT_NAME%...
-
-rem Use a simple directory name
-call "%NPX%" --yes @open-slide/cli init ^
- "%PROJECT_NAME%" --use-npm --no-git
-
-set "INIT_RESULT=!ERRORLEVEL!"
-
-popd
-
-if not "!INIT_RESULT!"=="0" (
-    echo [ERROR] Open Slide initialization failed.
-    goto :fail
-)
-
-:project_ready
-
-rem Verify expected project
-if not exist "%PROJECT%\package.json" (
-    echo [ERROR] package.json not found.
-    echo Expected: %PROJECT%
-    goto :fail
-)
-
-if not exist "%PROJECT%\open-slide.config.ts" (
-    echo [ERROR] Invalid Open Slide workspace.
-    goto :fail
-)
-
-rem Enter project directory safely
-pushd "%PROJECT%"
-if errorlevel 1 (
-    echo [ERROR] Cannot enter project directory.
-    goto :fail
-)
-
-echo Current project: !CD!
-
-rem Repair dependencies if missing
-if not exist "node_modules\.bin\open-slide.cmd" (
-    echo Installing Open Slide dependencies...
-
-    call "%NPM%" install
-
-    if errorlevel 1 (
-        popd
-        echo [ERROR] npm install failed.
-        goto :fail
-    )
-)
-
-if not exist "node_modules\.bin\open-slide.cmd" (
-    popd
-    echo [ERROR] Open Slide executable missing.
-    goto :fail
-)
-
-popd
-
-echo [OK] Open Slide ready.
-
-rem ==========================================
-rem STEP 3 - Codex CLI
-rem ==========================================
-
-echo.
-echo [3/4] Checking Codex CLI...
-
-if exist "%CODEX%" (
-    call "%CODEX%" --version >nul 2>&1
-    if not errorlevel 1 goto :codex_ready
-)
-
-echo Installing Codex CLI...
-
-call "%NPM%" install -g @openai/codex@latest --include=optional
-
-if errorlevel 1 (
-    echo [ERROR] Codex CLI installation failed.
-    goto :fail
-)
-
-if not exist "%CODEX%" (
-    echo [ERROR] Codex executable not found.
-    goto :fail
-)
-
-:codex_ready
-
-echo Codex CLI version:
-call "%CODEX%" --version
-
-if errorlevel 1 (
-    echo [ERROR] Codex CLI cannot execute.
-    goto :fail
-)
-
-rem ==========================================
-rem STEP 4 - Codex Authentication
-rem ==========================================
-
-echo.
-echo [4/4] Checking Codex authentication...
-
-call "%CODEX%" login status
-
-if errorlevel 1 (
-    echo.
-    echo [WARNING] Codex login not detected.
-    echo.
-    echo Login command:
-    echo "%CODEX%" login
-    echo.
-    echo You may continue using Open Slide.
-    echo.
-)
-
-rem ==========================================
-rem Check port availability
-rem ==========================================
-
-echo.
-echo Checking port %PORT%...
-
-netstat -ano -p TCP | findstr /C:":%PORT% " | findstr /C:"LISTENING" >nul
-
-if not errorlevel 1 (
-    echo [WARNING] Port %PORT% is already in use.
-    echo Check whether Open Slide is already running.
-    echo http://127.0.0.1:%PORT%
-    goto :end
-)
-
-rem ==========================================
-rem Start Open Slide
-rem ==========================================
-
-echo.
-echo ==============================================
-echo              Open Slide Ready
-echo ==============================================
-echo.
-echo URL: http://127.0.0.1:%PORT%
-echo Project: %PROJECT%
-echo.
-echo Press Ctrl+C to stop.
-echo ==============================================
-echo.
-
-pushd "%PROJECT%"
-if errorlevel 1 goto :fail
-
-rem Start browser and local development server
-call "%NPM%" run dev -- --host 127.0.0.1 --port %PORT% --open
-
-set "RUN_RESULT=!ERRORLEVEL!"
-
-popd
-
-if not "!RUN_RESULT!"=="0" (
-    echo [ERROR] Open Slide startup failed.
-    goto :fail
-)
-
-goto :end
-
-rem ==========================================
-rem Error handler
-rem ==========================================
-
-:fail
-echo.
-echo ==============================================
-echo [ERROR] Installation or startup failed.
-echo ==============================================
-echo.
-pause
-exit /b 1
-
-:end
-echo.
-echo Open Slide stopped.
-pause
-endlocal
+setlocal EnableExtensions DisableDelayedExpansion
+set "OPENSLIDE_LAUNCHER=%~f0"
+set "OPENSLIDE_ACTION=%~1"
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$s=[IO.File]::ReadAllText($env:OPENSLIDE_LAUNCHER); & ([scriptblock]::Create($s.Substring($s.LastIndexOf('# POWERSHELL PAYLOAD'))))"
+set "result=%errorlevel%"
+if "%~1"=="" pause
+exit /b %result%
+# POWERSHELL PAYLOAD
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$action = $env:OPENSLIDE_ACTION
+if (!$action) { $action = 'auto' }
+function Confirm-Action($message, $word) {
+    return (Read-Host "$message Type $word to confirm") -ceq $word
+}
+if ($action -notin @('auto','install','start','repair','check','update','uninstall','help')) { Write-Host 'Unknown command. Use install/start/repair/check/update/uninstall/help.'; exit 2 }
+if ($action -eq 'help') { Write-Host 'OpenSlide Launcher 1.0.0: install | start | repair | check | update | uninstall'; exit 0 }
+$base = Join-Path $env:LOCALAPPDATA 'OpenSlide'
+$nodeVersion = '24.22.2'
+$nodeHash = 'ca1bff5d8ead13c9f2ea404a176db46bd430704d5b5113734049fa365e7799e2'
+$slideVersion = '2.0.0'
+$codexVersion = '0.130.0'
+$nodeDir = Join-Path $base "node-v$nodeVersion"
+$node = Join-Path $nodeDir 'node.exe'
+$npm = Join-Path $nodeDir 'node_modules/npm/bin/npm-cli.js'
+$tools = Join-Path $base 'tools'
+$global = Join-Path $base 'npm-global'
+$codex = Join-Path $global 'node_modules/@openai/codex/bin/codex.js'
+$project = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'OpenSlideProjects'
+if ($action -eq 'auto') {
+    if ((Test-Path -LiteralPath $node) -and (Test-Path -LiteralPath (Join-Path $project 'package.json'))) { $action = 'start' } else { $action = 'install' }
+}
+$logDir = Join-Path $base 'logs'
+$lock = $null
+$transcribing = $false
+if ($action -eq 'uninstall') {
+    $uninstallLock = $null
+    try {
+        $localRoot = [IO.Path]::GetFullPath($env:LOCALAPPDATA).TrimEnd('\')
+        $target = [IO.Path]::GetFullPath($base).TrimEnd('\')
+        if ($target -ne ($localRoot + '\OpenSlide')) { throw 'Unexpected uninstall path. Stopped.' }
+        Write-Host "Remove installed tools, cache, backups and logs: $target"
+        Write-Host "Keep slide project: $project"
+        Write-Host 'Keep shared Codex login/settings and this BAT file.'
+        if (!(Test-Path -LiteralPath $target)) { Write-Host 'Already uninstalled.'; exit 0 }
+        $cursor = Get-Item -LiteralPath $target -Force
+        while ($cursor) {
+            if ($cursor.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Uninstall path contains a link or junction. Check its target and remove manually.' }
+            $cursor = $cursor.Parent
+        }
+        $links = @(Get-ChildItem -LiteralPath $target -Force -Recurse -Attributes ReparsePoint)
+        if ($links.Count) { throw 'Installation contains links or junctions. Check their targets and remove manually.' }
+        $running = @(Get-Process | Where-Object { $_.Path -and $_.Path.StartsWith($target + '\', [StringComparison]::OrdinalIgnoreCase) })
+        if ($running.Count) { throw 'Installed tools are running. Stop Open Slide and Codex before uninstalling.' }
+        $lockPath = Join-Path $target 'launcher.lock'
+        $uninstallLock = [IO.File]::Open($lockPath, 'OpenOrCreate', 'ReadWrite', 'None')
+        if (!(Confirm-Action "移除工具、快取、備份和日誌？`n$target`n簡報專案與共用 Codex 登入設定會保留。" 'UNINSTALL')) { Write-Host 'Uninstall cancelled.'; exit 0 }
+        # Retain the installation lock while removing other entries.
+        Get-ChildItem -LiteralPath $target -Force | Where-Object { $_.FullName -ne $lockPath } | ForEach-Object {
+            Remove-Item -LiteralPath $_.FullName -Recurse -Force
+        }
+        $uninstallLock.Dispose()
+        $uninstallLock = $null
+        Remove-Item -LiteralPath $lockPath -Force
+        Remove-Item -LiteralPath $target -Force
+        Write-Host 'Uninstalled. Slide project and shared Codex settings were kept.'
+        exit 0
+    } catch {
+        Write-Host "[ERROR] $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host 'Uninstall may be incomplete. Check the installation folder before retrying.'
+        exit 1
+    } finally {
+        if ($uninstallLock) { $uninstallLock.Dispose() }
+    }
+}
+function Run-Node([string[]]$Arguments) {
+    & $node @Arguments
+    if ($LASTEXITCODE -ne 0) { throw "Node command failed (exit $LASTEXITCODE): $($Arguments[0])" }
+}
+function Npm([string[]]$Arguments) { Run-Node (@($npm) + $Arguments) }
+function Json-File($path) { Get-Content -LiteralPath $path -Raw | ConvertFrom-Json }
+function Save-Json($value, $path) { [IO.File]::WriteAllText($path, ($value | ConvertTo-Json -Depth 50), (New-Object Text.UTF8Encoding $false)) }
+function Fetch($url) { Invoke-RestMethod -Uri $url -TimeoutSec 60 }
+function Ensure-Node {
+    if (!(Test-Path -LiteralPath $node)) {
+        $work = Join-Path $base ('stage-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $work | Out-Null
+        $zip = Join-Path $work 'node.zip'
+        Write-Host "Downloading verified Node.js $nodeVersion..."
+        Invoke-WebRequest "https://nodejs.org/dist/v$nodeVersion/node-v$nodeVersion-win-x64.zip" -UseBasicParsing -OutFile $zip -TimeoutSec 300
+        $stream = [IO.File]::OpenRead($zip)
+        try { $actualHash = [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($stream)).Replace('-','') } finally { $stream.Dispose() }
+        if ($actualHash -ne $nodeHash) { throw 'Node ZIP SHA256 mismatch. Installation stopped.' }
+        Expand-Archive -LiteralPath $zip -DestinationPath $work
+        Move-Item -LiteralPath (Join-Path $work "node-v$nodeVersion-win-x64") -Destination $nodeDir
+        # Only this unique directory, created by this invocation, is removed.
+        Remove-Item -LiteralPath $work -Recurse -Force
+    }
+    if (!(Test-Path -LiteralPath $npm)) { throw 'Portable npm is missing. Remove the damaged version directory and run repair.' }
+    $actual = & $node --version
+    if ($LASTEXITCODE -ne 0 -or $actual -ne "v$nodeVersion") { throw 'Portable Node version verification failed.' }
+}
+function Validate-Project {
+    $manifest = Join-Path $project 'package.json'
+    if (!(Test-Path -LiteralPath $manifest)) { throw "Project not installed: $project. Run install." }
+    $pkg = Json-File $manifest
+    if (!$pkg.dependencies.'@open-slide/core' -or !(Test-Path -LiteralPath (Join-Path $project 'open-slide.config.ts'))) { throw 'Existing directory is not a valid Open Slide project. No files overwritten.' }
+}
+function Dependencies {
+    Push-Location -LiteralPath $project
+    try {
+        if (Test-Path -LiteralPath 'package-lock.json') { Npm @('ci','--include=optional') }
+        else { Npm @('install','--include=optional') }
+    } finally { Pop-Location }
+}
+function Install-Codex($version) {
+    # Validate both packages before changing the installed CLI.
+    $null = Fetch "https://registry.npmjs.org/@openai%2fcodex/$version"
+    $null = Fetch "https://registry.npmjs.org/@openai%2fcodex/$version-win32-x64"
+    Npm @('install','--global','--prefix',$global,"@openai/codex@$version", "@openai/codex-win32-x64@npm:@openai/codex@$version-win32-x64",'--include=optional')
+    Run-Node @($codex,'--version')
+}
+try {
+    if ($env:PROCESSOR_ARCHITECTURE -ne 'AMD64' -and $env:PROCESSOR_ARCHITEW6432 -ne 'AMD64') { throw 'This launcher supports Windows x64 only.' }
+    New-Item -ItemType Directory -Force -Path $base,$logDir | Out-Null
+    $lock = [IO.File]::Open((Join-Path $base 'launcher.lock'), 'OpenOrCreate', 'ReadWrite', 'None')
+    $log = Join-Path $logDir ((Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + $PID + '.log')
+    Start-Transcript -Path $log | Out-Null
+    $transcribing = $true
+    Write-Host "OpenSlide Launcher 1.0.0 - $action"
+    Write-Host "Project: $project"
+    $env:PATH = "$nodeDir;$global;" + $env:PATH
+    $env:npm_config_cache = Join-Path $base 'npm-cache'
+    $env:npm_config_registry = 'https://registry.npmjs.org/'
+    $env:npm_config_prefix = $global
+    if ($action -eq 'check') {
+        foreach ($item in @(@('Node LTS', 'https://nodejs.org/dist/index.json'), @('Open Slide','https://registry.npmjs.org/@open-slide%2fcore/latest'), @('Codex','https://registry.npmjs.org/@openai%2fcodex/latest'))) {
+            $data = Fetch $item[1]
+            if ($item[0] -eq 'Node LTS') { $data = $data | Where-Object { $_.version -like 'v24.*' } | Select-Object -First 1 }
+            Write-Host "$($item[0]) available: $($data.version)"
+        }
+        Write-Host "Launcher pins: Node $nodeVersion; Open Slide $slideVersion; Codex $codexVersion"
+        if (Test-Path -LiteralPath $node) { Run-Node @('--version') }
+        if (Test-Path -LiteralPath $codex) { Run-Node @($codex,'--version') }
+        $installedCore = Join-Path $project 'node_modules/@open-slide/core/package.json'
+        if (Test-Path -LiteralPath $installedCore) { Write-Host "Installed Open Slide: $((Json-File $installedCore).version)" }
+    } elseif ($action -in @('install','repair')) {
+        Ensure-Node
+        if (!(Test-Path -LiteralPath (Join-Path $project 'package.json'))) {
+            if ((Test-Path -LiteralPath $project) -and @(Get-ChildItem -LiteralPath $project -Force).Count) { throw 'Project directory is not empty. Refusing to overwrite.' }
+            Npm @('install','--prefix',$tools,'@open-slide/cli@2.0.0','--include=optional')
+            New-Item -ItemType Directory -Force -Path $project | Out-Null
+            $template = Join-Path $tools 'node_modules/@open-slide/cli/template'
+            Get-ChildItem -LiteralPath $template -Force | Copy-Item -Destination $project -Recurse -Force
+            [IO.File]::WriteAllText((Join-Path $project '.gitignore'), "node_modules/`ndist/`n")
+            $manifest = Join-Path $project 'package.json'
+            $pkg = Json-File $manifest
+            $pkg.name = 'open-slide-projects'
+            $pkg.dependencies.'@open-slide/core' = $slideVersion
+            Save-Json $pkg $manifest
+        }
+        Validate-Project
+        if ($action -eq 'repair' -or !(Test-Path -LiteralPath (Join-Path $project 'node_modules/@open-slide/core/dist/cli/bin.js'))) { Dependencies }
+        if (!(Test-Path -LiteralPath $codex)) { Install-Codex $codexVersion }
+        elseif ($action -eq 'repair') { Install-Codex (Json-File (Join-Path $global 'node_modules/@openai/codex/package.json')).version }
+        else { Run-Node @($codex,'--version') }
+        Write-Host 'Ready. Double-click this BAT again to start Open Slide.'
+    } elseif ($action -eq 'update') {
+        if (!(Test-Path -LiteralPath $node)) { throw 'Run install before update.' }
+        Validate-Project
+        $newSlide = (Fetch 'https://registry.npmjs.org/@open-slide%2fcore/latest').version
+        $newCodex = (Fetch 'https://registry.npmjs.org/@openai%2fcodex/latest').version
+        if ($newSlide -notmatch '^\d+\.\d+\.\d+$' -or $newCodex -notmatch '^\d+\.\d+\.\d+$') { throw 'Invalid release version.' }
+        $coreManifest = Join-Path $project 'node_modules/@open-slide/core/package.json'
+        $codexManifest = Join-Path $global 'node_modules/@openai/codex/package.json'
+        if (!(Test-Path -LiteralPath $coreManifest) -or !(Test-Path -LiteralPath $codexManifest)) { throw 'Installed versions missing. Run repair before update.' }
+        $currentSlide = (Json-File $coreManifest).version
+        $currentCodex = (Json-File $codexManifest).version
+        if ($currentSlide -notmatch '^\d+\.\d+\.\d+$' -or $currentCodex -notmatch '^\d+\.\d+\.\d+$') { throw 'Cannot compare installed versions safely. No changes made.' }
+        $updateSlide = [version]$newSlide -gt [version]$currentSlide
+        $updateCodex = [version]$newCodex -gt [version]$currentCodex
+        Write-Host "Open Slide: installed $currentSlide; available $newSlide"
+        Write-Host "Codex: installed $currentCodex; available $newCodex"
+        if (!$updateSlide -and !$updateCodex) {
+            Write-Host 'No newer versions available. Nothing to update.'
+        } else {
+        if ($updateSlide) { Write-Host "Update Open Slide: $currentSlide -> $newSlide" }
+        if ($updateCodex) { Write-Host "Update Codex: $currentCodex -> $newCodex" }
+        if (Confirm-Action 'Install the newer versions listed above?' 'UPDATE') {
+            $backup = Join-Path $base ('backup-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
+            New-Item -ItemType Directory -Path $backup | Out-Null
+            Copy-Item -LiteralPath (Join-Path $project 'package.json') -Destination $backup
+            if (Test-Path -LiteralPath (Join-Path $project 'package-lock.json')) { Copy-Item -LiteralPath (Join-Path $project 'package-lock.json') -Destination $backup }
+            Write-Host "Manifest backup: $backup"
+            Push-Location -LiteralPath $project
+            try { if ($updateSlide) { Npm @('install','--save-exact',"@open-slide/core@$newSlide",'--include=optional') } } finally { Pop-Location }
+            if ($updateCodex) { Install-Codex $newCodex }
+            Write-Host 'Update complete. Start manually with OpenSlide.bat start.'
+        } else { Write-Host 'Update cancelled.' }
+        }
+    } elseif ($action -eq 'start') {
+        if (!(Test-Path -LiteralPath $node)) { throw 'Node is missing. Run install.' }
+        Validate-Project
+        $cli = Join-Path $project 'node_modules/@open-slide/core/dist/cli/bin.js'
+        if (!(Test-Path -LiteralPath $cli)) { throw 'Dependencies missing. Run repair.' }
+        $listener = New-Object Net.Sockets.TcpListener([Net.IPAddress]::Any,5173)
+        $listener.Server.ExclusiveAddressUse = $true
+        try { $listener.Start() } catch { throw 'Port 5173 is occupied. Close the other server before starting.' } finally { $listener.Stop() }
+        Push-Location -LiteralPath $project
+        try { Run-Node @($cli,'dev','--host','127.0.0.1','--port','5173','--open') } finally { Pop-Location }
+    }
+    exit 0
+} catch {
+    Write-Host "[ERROR] $($_.Exception.Message)" -ForegroundColor Red
+    if ($log) { Write-Host "Log: $log" }
+    exit 1
+} finally {
+    if ($transcribing) { Stop-Transcript | Out-Null }
+    if ($lock) { $lock.Dispose() }
+}

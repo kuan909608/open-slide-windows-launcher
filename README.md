@@ -1,50 +1,74 @@
-# Open Slide Windows Launcher
+# OpenSlide Windows Launcher v1.0.0
 
-Windows 一鍵安裝與啟動 [Open Slide](https://open-slide.dev/)，整合 OpenAI Codex CLI，適合不具備 Windows 系統管理員權限的使用者。
+下載 OpenSlide.bat 後可單獨使用，不需其他檔案。需要 Windows 10/11 x64、內建 Windows PowerShell 5.1 與網路連線。腳本使用內嵌 PowerShell；僅對本次程序設定 ExecutionPolicy，不變更電腦的永久設定。組織若禁止 PowerShell，請向 IT 確認。
 
-## 功能特色
+## 使用
 
-- 首次執行自動安裝 Node.js Portable、Open Slide、Codex CLI
-- 後續執行直接啟動 Open Slide
-- 不需要 Windows Administrator 權限
-- 不修改系統或使用者永久 PATH
-- 不建立 Windows Service 或開機自動啟動
-- 優先沿用本機 Codex 的既有登入狀態
-- 僅監聽 `127.0.0.1:5173`
+| 指令 | 行為 |
+| --- | --- |
+| 雙擊 `OpenSlide.bat` | 首次安裝並停止；已有 Node 與專案時直接啟動，沒有選單或彈出對話框 |
+| `OpenSlide.bat install` | 安裝並停止；首次安裝後需手動啟動 |
+| `OpenSlide.bat start` | 前景啟動，網址 http://127.0.0.1:5173；Ctrl+C 停止 |
+| `OpenSlide.bat repair` | 用 lockfile 重建依賴，補齊缺少的工具；保留簡報與既有版本 |
+| `OpenSlide.bat check` | 只查詢版本，不下載或執行最新版 CLI |
+| `OpenSlide.bat update` | 顯示明確的 Open Slide/Codex 目標版本，輸入 UPDATE 才更新 |
+| `OpenSlide.bat help` | 顯示指令 |
 
-## 系統需求
+一般使用只需雙擊 BAT：首次安裝完成後停止，再次雙擊即可啟動並開啟瀏覽器。沒有圖形介面或選單；執行期間保留命令視窗，Ctrl+C 停止。進階維護參數仍可使用。
 
-- Windows 10 / 11（x64）
-- 可連線至 Node.js 官方網站及 npm Registry
-- 可執行 CMD、curl、tar 和 certutil
-- 安裝及執行相關軟體須符合組織 IT 政策
+## 固定版本與目錄
 
-## 使用方式
+- Node.js 24.22.2 portable：`%LOCALAPPDATA%\OpenSlide\node-v24.22.2`。ZIP 使用寫在 BAT 內的官方 SHA256 驗證，不只比對同次下載的校驗檔。
+- Open Slide CLI/core 2.0.0：專案初始 core 固定版，後續透過 package-lock.json 與 npm ci 重建。
+- Codex CLI 0.130.0：`%LOCALAPPDATA%\OpenSlide\npm-global`，同時安裝對應 Windows x64 optional package 並執行版本驗證。
+- 專案：Windows 實際 Documents 已知資料夾下的 OpenSlideProjects，支援 OneDrive/重新導向目錄。
+- 每次操作日誌：`%LOCALAPPDATA%\OpenSlide\logs`。
 
-1. 從 GitHub Releases 下載 `OpenSlide.bat`。
-2. 雙擊 `OpenSlide.bat`。
-3. 首次執行時自動安裝相依環境。
-4. 啟動後透過瀏覽器開啟 `http://127.0.0.1:5173`。
-5. 使用完畢後按 `Ctrl+C` 停止服務。
+不需要管理員、不永久修改 PATH、不建立服務、不加入開機啟動。安裝器不會自動登入 Codex。Codex 沿用 `%USERPROFILE%\.codex` 或既有 CODEX_HOME；登入可執行 `"%LOCALAPPDATA%\OpenSlide\npm-global\codex.cmd" login`。
 
-## 安裝目錄
+update 只在輸入 UPDATE 後將 Open Slide core 與 Codex 更新為查詢到的明確版本，不對全部依賴執行 npm update。更新前備份 package.json/package-lock.json 至 LocalAppData 下 backup 目錄；失敗可能留下部分已更新的元件，日誌會記錄，並非跨套件交易。要還原專案，將備份兩檔放回專案後執行 repair。Node 固定版不會被 update 改動；需新版啟動器才能更換 Node。首次 lockfile 生成時，React 等範本間接依賴依範本範圍解析，之後依 lockfile 固定。
 
-程式安裝在：
+既有非空且不是 Open Slide 專案的目錄會被拒絕覆寫。修復不刪除簡報；npm ci 會重建 node_modules。若 portable Node 本體損壞，錯誤訊息會要求移走該版 Node 目錄後再 repair。執行中會鎖定啟動器，避免另一個實例同時修改依賴；請先停止伺服器再執行 repair/update。
 
-`%LOCALAPPDATA%\OpenSlide`
+## 官方查核
 
-簡報專案預設存放在：
+- [Node.js v24.22.2 官方校驗檔](https://nodejs.org/dist/v24.22.2/SHASUMS256.txt)
+- [Open Slide CLI 2.0.0 發布資料](https://registry.npmjs.org/@open-slide%2fcli/2.0.0)：已檢查實際程式碼。上游 init 會拒絕空格路徑，因此啟動器直接複製此固定版官方範本，保留隱藏檔，再設定 package.json。
+- [Open Slide core 2.0.0 發布資料](https://registry.npmjs.org/@open-slide%2fcore/2.0.0)：已檢查 dev --host/--port 的實際程式碼。
+- [Codex CLI 官方文件](https://developers.openai.com/codex/cli)
+- [Codex 0.130.0 發布資料](https://registry.npmjs.org/@openai%2fcodex/0.130.0)：已確認 Windows x64 套件別名。
 
-`%USERPROFILE%\Documents\OpenSlideProjects`
+此為非官方啟動器。僅安裝與啟動 CLI，不呼叫 OpenAI API、不需要把 API key 寫入 BAT。
 
-Codex 的登入設定會維持原有位置，不會由本腳本複製或上傳。
 
-## 注意事項
+## 本機測試紀錄
 
-本工具是非官方的 Windows 啟動腳本，並非 Open Slide 或 OpenAI 官方發行版本。
+在 Windows CMD 執行隔離測試，專案與 LocalAppData 使用工作目錄內含中文、空格、!、&、括號的資料夾。通過 help、未知指令錯誤碼、完整網路安裝、固定版 Codex 執行、安裝後不啟動伺服器、前景啟動與 HTTP 200、連接埠占用拒絕、並行操作鎖定。因本機 5173 已有其他服務，伺服器 HTTP 測試使用僅改測試副本為 15173；交付版仍為 5173。實際升級不在測試中變更既有版本。
 
-本工具依賴 Open Slide、Node.js 與 Codex CLI。使用前應確認各項軟體的授權條款、版本相容性及組織 IT 政策。
+安裝時 npm audit 回報範本依賴有 7 項問題（3 low、4 moderate）；尚未逐項判定影響，未自動執行會改變依賴版本的 audit fix。
+repair、check、拒絕 update（輸入 NO）、重複 install 亦已通過；取消更新後 Open Slide 仍為 2.0.0、Codex 仍為 0.130.0。
 
-## 專案授權
+## 移除
 
-MIT License（僅適用於本專案自行撰寫的腳本與文件）。
+先在伺服器視窗按 Ctrl+C，並關閉使用此工具安裝的 Codex CLI，再執行：
+
+```cmd
+OpenSlide.bat uninstall
+```
+
+畫面顯示移除範圍後，輸入大寫 `UNINSTALL` 才會刪除 `%LOCALAPPDATA%\OpenSlide`，其中包含 Node.js、Codex CLI、npm 快取、備份和日誌。其他輸入會取消。此指令不連網。
+
+簡報專案、共用的 `%USERPROFILE%\.codex`／CODEX_HOME 設定，以及 BAT 本身會保留。若連作品也不需要，請自行備份後刪除 Documents 中的 OpenSlideProjects。BAT 可最後手動刪除。
+
+若有啟動器或工具仍在執行，移除會停止。若安裝路徑包含符號連結或 junction，也會停止，需先核對連結目標後手動處理。檔案被其他程式鎖住時可能部分移除；錯誤會顯示在目前視窗。
+
+uninstall 已以隔離的含中文與特殊字元路徑測試取消、確認刪除及重複移除；沒有對實際安裝目錄執行移除。
+
+
+更新修正：update 會比較實際安裝的 core/Codex package.json 版本，只升級版本較新的元件。相同版本或本機較新時不詢問、不重裝、不降級；缺少版本資料時要求先 repair。有新版仍需在命令視窗輸入 UPDATE 同意。已用隔離測試驗證版本相同、本機較新、僅 core 較新、僅 Codex 較新與取消更新，未實際套用升級。
+
+
+
+啟動器不修改第三方套件原始碼，也不關閉 Node 警告。若先前使用過含套件修補的版本，可使用 repair 依 lockfile 重新安裝官方套件；修復會重建 node_modules，保留簡報。警告是否消失取決於上游正式版本的修正。
+
+不想手動輸入指令時，將 Update-OpenSlide.bat、Uninstall-OpenSlide.bat 與 OpenSlide.bat 放在同一資料夾，雙擊對應檔案即可。更新需輸入 UPDATE 才套用，移除需輸入 UNINSTALL 才刪除工具；沒有新版不會要求更新。操作前請先停止服務。主 BAT 本身仍可獨立使用，兩個輔助檔僅提供雙擊入口。
