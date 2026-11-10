@@ -18,13 +18,18 @@ function Confirm-Action($message, $word) {
 if ($action -notin @('auto','install','start','repair','check','update','uninstall','help')) { Write-Host 'Unknown command. Use install/start/repair/check/update/uninstall/help.'; exit 2 }
 if ($action -eq 'help') { Write-Host 'OpenSlide Launcher 1.0.0: install | start | repair | check | update | uninstall'; exit 0 }
 $base = Join-Path $env:LOCALAPPDATA 'OpenSlide'
-$nodeVersion = '24.22.2'
-$nodeHash = 'ca1bff5d8ead13c9f2ea404a176db46bd430704d5b5113734049fa365e7799e2'
-$slideVersion = '2.0.0'
-$codexVersion = '0.130.0'
-$nodeDir = Join-Path $base "node-v$nodeVersion"
-$node = Join-Path $nodeDir 'node.exe'
-$npm = Join-Path $nodeDir 'node_modules/npm/bin/npm-cli.js'
+function Set-NodeVersion($version) {
+    $script:nodeVersion = $version
+    $script:nodeDir = Join-Path $base "node-v$version"
+    $script:node = Join-Path $nodeDir 'node.exe'
+    $script:npm = Join-Path $nodeDir 'node_modules/npm/bin/npm-cli.js'
+}
+# Reuse the installed runtime for start/repair; resolve latest LTS on first install.
+$installedNode = Get-ChildItem -LiteralPath $base -Directory -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -match '^node-v\d+\.\d+\.\d+$' -and (Test-Path -LiteralPath (Join-Path $_.FullName 'node.exe')) } |
+    Sort-Object { [version]$_.Name.Substring(6) } -Descending | Select-Object -First 1
+if ($installedNode) { Set-NodeVersion $installedNode.Name.Substring(6) }
+else { Set-NodeVersion 'uninstalled' }
 $tools = Join-Path $base 'tools'
 $global = Join-Path $base 'npm-global'
 $codex = Join-Path $global 'node_modules/@openai/codex/bin/codex.js'
@@ -83,8 +88,21 @@ function Npm([string[]]$Arguments) { Run-Node (@($npm) + $Arguments) }
 function Json-File($path) { Get-Content -LiteralPath $path -Raw | ConvertFrom-Json }
 function Save-Json($value, $path) { [IO.File]::WriteAllText($path, ($value | ConvertTo-Json -Depth 50), (New-Object Text.UTF8Encoding $false)) }
 function Fetch($url) { Invoke-RestMethod -Uri $url -TimeoutSec 60 }
+function Latest-Package($name) {
+    $version = (Fetch "https://registry.npmjs.org/$name/latest").version
+    if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "Invalid release version for $name." }
+    return $version
+}
 function Ensure-Node {
     if (!(Test-Path -LiteralPath $node)) {
+        $release = Fetch 'https://nodejs.org/dist/index.json' | Where-Object { $_.lts -and $_.files -contains 'win-x64-zip' } | Select-Object -First 1
+        if (!$release -or $release.version -notmatch '^v\d+\.\d+\.\d+$') { throw 'No valid Windows x64 Node LTS release found.' }
+        Set-NodeVersion $release.version.Substring(1)
+        $archiveName = "node-v$nodeVersion-win-x64.zip"
+        $checksums = (Invoke-WebRequest "https://nodejs.org/dist/v$nodeVersion/SHASUMS256.txt" -UseBasicParsing -TimeoutSec 60).Content
+        $hashMatch = [regex]::Match($checksums, ('(?m)^([a-fA-F0-9]{64})\s+' + [regex]::Escape($archiveName) + '\r?$'))
+        if (!$hashMatch.Success) { throw 'Official Node ZIP SHA256 is missing. Installation stopped.' }
+        $nodeHash = $hashMatch.Groups[1].Value
         $work = Join-Path $base ('stage-' + [guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory -Path $work | Out-Null
         $zip = Join-Path $work 'node.zip'
@@ -98,6 +116,7 @@ function Ensure-Node {
         # Only this unique directory, created by this invocation, is removed.
         Remove-Item -LiteralPath $work -Recurse -Force
     }
+    $env:PATH = "$nodeDir;" + $env:PATH
     if (!(Test-Path -LiteralPath $npm)) { throw 'Portable npm is missing. Remove the damaged version directory and run repair.' }
     $actual = & $node --version
     if ($LASTEXITCODE -ne 0 -or $actual -ne "v$nodeVersion") { throw 'Portable Node version verification failed.' }
@@ -138,10 +157,10 @@ try {
     if ($action -eq 'check') {
         foreach ($item in @(@('Node LTS', 'https://nodejs.org/dist/index.json'), @('Open Slide','https://registry.npmjs.org/@open-slide%2fcore/latest'), @('Codex','https://registry.npmjs.org/@openai%2fcodex/latest'))) {
             $data = Fetch $item[1]
-            if ($item[0] -eq 'Node LTS') { $data = $data | Where-Object { $_.version -like 'v24.*' } | Select-Object -First 1 }
+            if ($item[0] -eq 'Node LTS') { $data = $data | Where-Object { $_.lts -and $_.files -contains 'win-x64-zip' } | Select-Object -First 1 }
             Write-Host "$($item[0]) available: $($data.version)"
         }
-        Write-Host "Launcher pins: Node $nodeVersion; Open Slide $slideVersion; Codex $codexVersion"
+        Write-Host 'Install defaults: latest Node LTS; latest stable Open Slide CLI/core and Codex.'
         if (Test-Path -LiteralPath $node) { Run-Node @('--version') }
         if (Test-Path -LiteralPath $codex) { Run-Node @($codex,'--version') }
         $installedCore = Join-Path $project 'node_modules/@open-slide/core/package.json'
@@ -150,7 +169,10 @@ try {
         Ensure-Node
         if (!(Test-Path -LiteralPath (Join-Path $project 'package.json'))) {
             if ((Test-Path -LiteralPath $project) -and @(Get-ChildItem -LiteralPath $project -Force).Count) { throw 'Project directory is not empty. Refusing to overwrite.' }
-            Npm @('install','--prefix',$tools,'@open-slide/cli@2.0.0','--include=optional')
+            $cliVersion = Latest-Package '@open-slide%2fcli'
+            $slideVersion = Latest-Package '@open-slide%2fcore'
+            Write-Host "Installing Open Slide CLI $cliVersion; core $slideVersion"
+            Npm @('install','--prefix',$tools,"@open-slide/cli@$cliVersion",'--include=optional')
             New-Item -ItemType Directory -Force -Path $project | Out-Null
             $template = Join-Path $tools 'node_modules/@open-slide/cli/template'
             Get-ChildItem -LiteralPath $template -Force | Copy-Item -Destination $project -Recurse -Force
@@ -163,7 +185,7 @@ try {
         }
         Validate-Project
         if ($action -eq 'repair' -or !(Test-Path -LiteralPath (Join-Path $project 'node_modules/@open-slide/core/dist/cli/bin.js'))) { Dependencies }
-        if (!(Test-Path -LiteralPath $codex)) { Install-Codex $codexVersion }
+        if (!(Test-Path -LiteralPath $codex)) { Install-Codex (Latest-Package '@openai%2fcodex') }
         elseif ($action -eq 'repair') { Install-Codex (Json-File (Join-Path $global 'node_modules/@openai/codex/package.json')).version }
         else { Run-Node @($codex,'--version') }
         Write-Host 'Ready. Double-click this BAT again to start Open Slide.'
